@@ -6,3 +6,535 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum UserAuthProvider {
+  LOCAL
+  GOOGLE
+  GITHUB
+}
+
+enum RoleType {
+  SYSTEM
+  CUSTOM
+}
+
+enum PermissionAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  MANAGE
+}
+
+enum PermissionAccess {
+  GENERAL
+  OWN
+  ANY
+}
+
+enum PlanType {
+  FREE
+  PAID
+  ENTERPRISE
+  CUSTOM
+}
+
+enum PlanPricingModel {
+  FLAT_FEE
+  PER_USER
+  USAGE_BASED
+}
+
+enum BillingInterval {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+  LIFETIME
+}
+
+enum UserSubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  EXPIRED
+  UNPAID
+}
+
+enum PaymentStatus {
+  INITIATED
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  STRIPE
+  RAZORPAY
+  LEMON_SQUEEZY
+  MANUAL
+}
+
+enum SessionType {
+  WEB
+  MOBILE
+  DESKTOP
+  API
+}
+
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum AuditLogActorType {
+  USER
+  SYSTEM
+  ADMIN
+  API_KEY
+}
+
+enum AuditLogAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  PASSWORD_RESET
+  SUBSCRIPTION_CHANGE
+}
+
+enum AuditLogSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum AuditLogStatus {
+  SUCCESS
+  FAILURE
+}
+
+// ==========================================
+// CORE AUTH & USER MODELS
+// ==========================================
+
+model User {
+  id                         String            @id @default(uuid())
+  email                      String            @unique
+  password                   String?
+  globalRoleId               String
+  status                     UserStatus        @default(ACTIVE)
+  authProvider               UserAuthProvider  @default(LOCAL)
+  providerId                 String?
+  isEmailVerified            Boolean           @default(false)
+  emailVerifiedAt            DateTime?
+  phone                      String?
+  isPhoneVerified            Boolean           @default(false)
+  phoneVerifiedAt            DateTime?
+  isMfaEnabled               Boolean           @default(false)
+  mfaSecret                  String?
+  mfaEnabledAt               DateTime?
+  lastLoginAt                DateTime?
+  lastLogoutAt               DateTime?
+  lastLoginIp                String?
+  loginAttempts              Int               @default(0)
+  lockedUntil                DateTime?
+  passwordChangedAt          DateTime?
+  passwordResetTokenHash     String?
+  passwordResetExpiresAt     DateTime?
+  emailVerificationTokenHash String?
+  emailVerificationExpiresAt DateTime?
+  termsAcceptedAt            DateTime?
+  privacyPolicyAcceptedAt    DateTime?
+  isDeleted                  Boolean           @default(false)
+  deletedAt                  DateTime?
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
+
+  role                       Role              @relation(fields: [globalRoleId], references: [id])
+  profile                    UserProfile?
+  preferences                UserPreference[]
+  sessions                   Session[]
+  subscriptions              UserSubscription[]
+  payments                   SubscriptionPayment[]
+  usage                      SubscriptionUsage[]
+  auditLogs                  AuditLog[]
+
+  @@index([email])
+  @@index([globalRoleId])
+  @@index([status])
+  @@index([authProvider, providerId])
+  @@map("users")
+}
+
+model UserProfile {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  firstName   String
+  lastName    String
+  displayName String?
+  bio         String?
+  avatarUrl   String?
+  dateOfBirth DateTime?
+  profileType String    @default("PERSONAL")
+  occupation  String?
+  education   String?
+  interests   Json?     @default("[]")
+  timezone    String?   @default("UTC")
+  language    String?   @default("en")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model UserPreference {
+  id        String   @id @default(uuid())
+  userId    String
+  key       String
+  value     Json
+  valueType String   @default("STRING")
+  category  String   @default("GENERAL")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId, category])
+  @@map("user_preferences")
+}
+
+model Session {
+  id                  String        @id @default(uuid())
+  userId              String
+  type                SessionType   @default(WEB)
+  refreshTokenHash    String
+  refreshTokenVersion Int           @default(1)
+  status              SessionStatus @default(ACTIVE)
+  deviceId            String?
+  deviceName          String?
+  userAgent           String?
+  createdIpAddress    String?
+  lastIpAddress       String?
+  lastUsedAt          DateTime?
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  revokedReason       String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ==========================================
+// ROLES & PERMISSIONS (RBAC)
+// ==========================================
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  displayName String
+  code        String           @unique
+  description String?
+  type        RoleType         @default(SYSTEM)
+  isSystem    Boolean          @default(false)
+  isDefault   Boolean          @default(false)
+  priority    Int              @default(50)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  displayName String
+  code        String           @unique
+  module      String
+  action      PermissionAction
+  access      PermissionAccess @default(GENERAL)
+  description String?
+  sortOrder   Int              @default(0)
+  isSystem    Boolean          @default(true)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  roles       RolePermission[]
+
+  @@index([module])
+  @@index([code])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  assignedAt   DateTime   @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ==========================================
+// SAAS PLANS, FEATURES & SUBSCRIPTIONS
+// ==========================================
+
+model Plan {
+  id            String             @id @default(uuid())
+  name          String
+  code          String             @unique
+  description   String
+  type          PlanType           @default(PAID)
+  pricingModel  PlanPricingModel   @default(FLAT_FEE)
+  trialDays     Int                @default(0)
+  visibility    String             @default("PUBLIC")
+  isPopular     Boolean            @default(false)
+  sortOrder     Int                @default(0)
+  isDefault     Boolean            @default(false)
+  isSystem      Boolean            @default(false)
+  isActive      Boolean            @default(true)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  prices        PlanPrice[]
+  features      PlanFeature[]
+  subscriptions UserSubscription[]
+
+  @@map("plans")
+}
+
+model PlanPrice {
+  id              String            @id @default(uuid())
+  planId          String
+  currencyId      String
+  billingInterval BillingInterval
+  amountMinor     Int
+  sortOrder       Int               @default(0)
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  plan            Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  currency        Currency          @relation(fields: [currencyId], references: [id])
+  subscriptions   UserSubscription[]
+
+  @@unique([planId, currencyId, billingInterval])
+  @@map("plan_prices")
+}
+
+model Feature {
+  id           String        @id @default(uuid())
+  name         String
+  code         String        @unique
+  description  String
+  category     String        @default("GENERAL")
+  type         String        @default("BOOLEAN")
+  isDefault    Boolean       @default(false)
+  isSystem     Boolean       @default(true)
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  planFeatures PlanFeature[]
+
+  @@map("features")
+}
+
+model PlanFeature {
+  id          String   @id @default(uuid())
+  planId      String
+  featureId   String
+  isEnabled   Boolean  @default(true)
+  limit       Int      @default(0)
+  limitType   String   @default("COUNT")
+  isUnlimited Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  plan        Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature     Feature  @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureId])
+  @@map("plan_features")
+}
+
+model UserSubscription {
+  id                     String                 @id @default(uuid())
+  userId                 String
+  planId                 String
+  planPriceId            String?
+  billingInterval        BillingInterval?
+  status                 UserSubscriptionStatus @default(ACTIVE)
+  startDate              DateTime               @default(now())
+  endDate                DateTime?
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  autoRenew              Boolean                @default(true)
+  cancelAtPeriodEnd      Boolean                @default(false)
+  canceledAt             DateTime?
+  cancellationReason     String?
+  paymentProvider        String?
+  providerSubscriptionId String?
+  providerCustomerId     String?
+  isActive               Boolean                @default(true)
+  revision               Int                    @default(0)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                   Plan                   @relation(fields: [planId], references: [id])
+  planPrice              PlanPrice?             @relation(fields: [planPriceId], references: [id])
+  payments               SubscriptionPayment[]
+
+  @@index([userId, isActive])
+  @@index([status])
+  @@map("user_subscriptions")
+}
+
+model SubscriptionPayment {
+  id                 String            @id @default(uuid())
+  userId             String
+  subscriptionId     String?
+  planId             String
+  planPriceId        String?
+  billingInterval    BillingInterval
+  provider           PaymentProvider   @default(STRIPE)
+  providerPaymentId  String?
+  providerOrderId    String?
+  providerSignature  String?
+  amountMinor        Int
+  currency           String
+  status             PaymentStatus     @default(INITIATED)
+  billingPeriodStart DateTime?
+  billingPeriodEnd   DateTime?
+  capturedAt         DateTime?
+  failedAt           DateTime?
+  refundedAt         DateTime?
+  errorCode          String?
+  errorMessage       String?
+  metadata           Json?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription       UserSubscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([subscriptionId])
+  @@index([status])
+  @@map("subscription_payments")
+}
+
+model SubscriptionUsage {
+  id               String   @id @default(uuid())
+  userId           String
+  featureCode      String
+  usedCount        Int      @default(0)
+  storageBytesUsed BigInt   @default(0)
+  lastCalculatedAt DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, featureCode])
+  @@index([userId])
+  @@map("subscription_usages")
+}
+
+// ==========================================
+// SYSTEM & LOCALIZATION
+// ==========================================
+
+model Currency {
+  id            String      @id @default(uuid())
+  name          String
+  code          String      @unique
+  symbol        String
+  numericCode   String?     @unique
+  decimalPlaces Int         @default(2)
+  isDefault     Boolean     @default(false)
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  planPrices    PlanPrice[]
+
+  @@map("currencies")
+}
+
+model SystemSetting {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  value        Json
+  valueType    String   @default("STRING")
+  category     String   @default("GENERAL")
+  description  String
+  defaultValue Json?
+  isEditable   Boolean  @default(true)
+  isPublic     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model AuditLog {
+  id           String            @id @default(uuid())
+  actorId      String?
+  actorType    AuditLogActorType @default(USER)
+  action       AuditLogAction
+  module       String
+  resourceType String?
+  resourceId   String?
+  resourceName String?
+  description  String
+  status       AuditLogStatus
+  severity     AuditLogSeverity  @default(INFO)
+  changes      Json?
+  metadata     Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime          @default(now())
+
+  actor        User?             @relation(fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([module])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
